@@ -30,15 +30,35 @@ postconf -P "submission/inet/syslog_name=postfix/submission"
 postconf -P "submission/inet/smtpd_tls_security_level=may"
 postconf -P "submission/inet/smtpd_sasl_auth_enable=no"
 
-# Configuração de Redes Confiáveis (Tabela CIDR ou Variável)
-CIDR_RULES="/etc/mailguard/rules/allowed_ips.cidr"
-if [ -f "${CIDR_RULES}" ]; then
-    echo "Carregando tabela CIDR de IPs permitidos (${CIDR_RULES})..."
-    postconf -e "mynetworks = 127.0.0.0/8 [::1]/128 cidr:${CIDR_RULES}"
-else
-    echo "Tabela CIDR não encontrada. Usando MYNETWORKS padrão..."
-    postconf -e "mynetworks = ${MYNETWORKS:-127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16}"
+# Inicialização do Arquivo de IPs Gravável
+mkdir -p /etc/mailguard
+WORK_CIDR="/etc/mailguard/allowed_ips.cidr"
+CM_MOUNT=""
+
+if [ -f "/etc/mailguard/configmap/allowed_ips.cidr" ]; then
+    CM_MOUNT="/etc/mailguard/configmap/allowed_ips.cidr"
+elif [ -f "/etc/mailguard/rules/allowed_ips.cidr" ]; then
+    CM_MOUNT="/etc/mailguard/rules/allowed_ips.cidr"
 fi
+
+if [ -n "${CM_MOUNT}" ]; then
+    echo "Copiando regras do ConfigMap (${CM_MOUNT}) para o arquivo de trabalho gravável..."
+    cp -f "${CM_MOUNT}" "${WORK_CIDR}"
+elif [ ! -f "${WORK_CIDR}" ]; then
+    echo "Criando arquivo de regras padrão..."
+    cat <<EOF > "${WORK_CIDR}"
+# ==============================================================================
+# Tabela de IPs / Redes Autorizadas para Relay no MailGuard
+# ==============================================================================
+127.0.0.0/8            OK # Localhost
+10.0.0.0/8             OK # Rede Interna do Cluster
+EOF
+fi
+
+chmod 666 "${WORK_CIDR}" 2>/dev/null || true
+
+echo "Carregando tabela CIDR de IPs permitidos (${WORK_CIDR})..."
+postconf -e "mynetworks = 127.0.0.0/8 [::1]/128 cidr:${WORK_CIDR}"
 
 # Conector de Saída / Relay Host
 if [ -n "$SMTP_RELAY_HOST" ]; then
@@ -83,15 +103,17 @@ python3 -u /log_forwarder.py &
 # Iniciar o MailGuard Web Dashboard (:443 / HTTPS)
 python3 -u /dashboard.py &
 
-# Watchdog em background para recarga automática quando o ConfigMap mudar
-if [ -f "${CIDR_RULES}" ]; then
+# Watchdog para sincronizar alterações do ConfigMap com o arquivo de trabalho gravável
+if [ -n "${CM_MOUNT}" ]; then
     (
-        LAST_MOD=$(stat -c %Y "${CIDR_RULES}" 2>/dev/null || echo 0)
+        LAST_MOD=$(stat -c %Y "${CM_MOUNT}" 2>/dev/null || echo 0)
         while true; do
             sleep 5
-            CURRENT_MOD=$(stat -c %Y "${CIDR_RULES}" 2>/dev/null || echo 0)
+            CURRENT_MOD=$(stat -c %Y "${CM_MOUNT}" 2>/dev/null || echo 0)
             if [ "$CURRENT_MOD" != "$LAST_MOD" ] && [ "$CURRENT_MOD" != "0" ]; then
-                echo "[Watchdog] Alteração detectada em ${CIDR_RULES}. Recarregando Postfix..."
+                echo "[Watchdog] Alteração detectada no ConfigMap (${CM_MOUNT}). Sincronizando com arquivo de trabalho..."
+                cp -f "${CM_MOUNT}" "${WORK_CIDR}"
+                chmod 666 "${WORK_CIDR}" 2>/dev/null || true
                 postfix reload 2>/dev/null || true
                 LAST_MOD="$CURRENT_MOD"
             fi

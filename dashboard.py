@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("DASHBOARD_PORT", "443"))
 LOG_FILE = "/var/log/mail.log"
-CIDR_FILE = "/etc/mailguard/rules/allowed_ips.cidr"
+CIDR_FILE = "/etc/mailguard/allowed_ips.cidr"
 RELAY_HOST = os.environ.get("SMTP_RELAY_HOST", "[smtp.office365.com]:25")
 MYHOSTNAME = os.environ.get("MYHOSTNAME", "mailguard.local")
 AUTH_USER = os.environ.get("DASHBOARD_USER", "admin").strip().lower()
@@ -468,9 +468,10 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                                         <label class="form-label small text-secondary">Descrição / Nome do Sistema</label>
                                         <input type="text" id="input-desc" class="form-control bg-dark text-light border-secondary" placeholder="Ex: Servidor de Aplicacao">
                                     </div>
-                                    <button type="submit" class="btn btn-success w-100 btn-action">
+                                    <button type="submit" id="btn-add-ip" class="btn btn-success w-100 btn-action">
                                         <i class="fa-solid fa-check me-1"></i> Autorizar IP & Auditar
                                     </button>
+                                    <div id="ip-alert" class="alert alert-danger py-2 small mt-2" style="display:none;"></div>
                                 </form>
                             </div>
                         </div>
@@ -637,18 +638,29 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 
         async function addIp(e) {
             e.preventDefault();
-            const ip = document.getElementById('input-ip').value;
-            const desc = document.getElementById('input-desc').value;
-            await fetchAPI('/api/ips/add', { method: 'POST', body: JSON.stringify({ ip, desc }) });
-            document.getElementById('input-ip').value = '';
-            document.getElementById('input-desc').value = '';
-            loadIps();
-            loadStatus();
+            const alertBox = document.getElementById('ip-alert');
+            const ip = document.getElementById('input-ip').value.trim();
+            const desc = document.getElementById('input-desc').value.trim();
+            alertBox.style.display = 'none';
+
+            const res = await fetchAPI('/api/ips/add', { method: 'POST', body: JSON.stringify({ ip, desc }) });
+            if (res.success) {
+                document.getElementById('input-ip').value = '';
+                document.getElementById('input-desc').value = '';
+                loadIps();
+                loadStatus();
+            } else {
+                alertBox.innerText = res.error || 'Erro ao adicionar IP.';
+                alertBox.style.display = 'block';
+            }
         }
 
         async function deleteIp(ip) {
             if (confirm(`Remover permissão para ${ip}?`)) {
-                await fetchAPI('/api/ips/delete', { method: 'POST', body: JSON.stringify({ ip }) });
+                const res = await fetchAPI('/api/ips/delete', { method: 'POST', body: JSON.stringify({ ip }) });
+                if (!res.success) {
+                    alert(res.error || 'Erro ao remover IP');
+                }
                 loadIps();
                 loadStatus();
             }
@@ -840,24 +852,31 @@ class RequestHandler(BaseHTTPRequestHandler):
                 entry = f"{ip}    OK"
                 if desc:
                     entry += f" # {desc}"
-                with open(CIDR_FILE, "a", encoding="utf-8") as f:
-                    f.write(f"\n{entry}\n")
-                run_cmd("postfix reload")
-                audit_log("AUDIT", f"IP {ip} adicionado à lista de permissões (Desc: {desc})", user=user, client_ip=client_ip)
-                self.send_json({"success": True})
+                try:
+                    os.makedirs(os.path.dirname(CIDR_FILE), exist_ok=True)
+                    with open(CIDR_FILE, "a", encoding="utf-8") as f:
+                        f.write(f"\n{entry}\n")
+                    run_cmd("postfix reload")
+                    audit_log("AUDIT", f"IP {ip} adicionado à lista de permissões (Desc: {desc})", user=user, client_ip=client_ip)
+                    self.send_json({"success": True})
+                except Exception as e:
+                    self.send_json({"error": f"Erro de gravação: {str(e)}"}, 500)
             else:
                 self.send_json({"error": "IP obrigatório"}, 400)
         elif url.path == "/api/ips/delete":
             ip = data.get("ip", "").strip()
             if ip and os.path.exists(CIDR_FILE):
-                with open(CIDR_FILE, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                new_lines = [l for l in lines if not l.strip().startswith(ip)]
-                with open(CIDR_FILE, "w", encoding="utf-8") as f:
-                    f.writelines(new_lines)
-                run_cmd("postfix reload")
-                audit_log("AUDIT", f"IP {ip} removido da lista de permissões", user=user, client_ip=client_ip)
-                self.send_json({"success": True})
+                try:
+                    with open(CIDR_FILE, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    new_lines = [l for l in lines if not l.strip().startswith(ip)]
+                    with open(CIDR_FILE, "w", encoding="utf-8") as f:
+                        f.writelines(new_lines)
+                    run_cmd("postfix reload")
+                    audit_log("AUDIT", f"IP {ip} removido da lista de permissões", user=user, client_ip=client_ip)
+                    self.send_json({"success": True})
+                except Exception as e:
+                    self.send_json({"error": f"Erro ao remover IP: {str(e)}"}, 500)
             else:
                 self.send_json({"error": "IP não encontrado"}, 400)
         elif url.path == "/api/send_test":
