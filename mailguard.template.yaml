@@ -2,13 +2,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: mailguard-sa
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: mailguard-configmap-role
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -19,11 +19,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: mailguard-configmap-rb
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 subjects:
   - kind: ServiceAccount
     name: mailguard-sa
-    namespace: infraestrutura
+    namespace: ${NAMESPACE}
 roleRef:
   kind: Role
   name: mailguard-configmap-role
@@ -33,10 +33,10 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: tls-mailguard
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 spec:
   secretName: tls-mailguard
-  commonName: mailguard.local
+  commonName: ${MYHOSTNAME}
   subject:
     organizations:
       - Infrastructure
@@ -45,36 +45,36 @@ spec:
     countries:
       - BR
   dnsNames:
-    - mailguard.local
+    - ${MYHOSTNAME}
     - mailguard
-    - mailguard.infraestrutura
-    - mailguard.infraestrutura.svc.cluster.local
+    - mailguard.${NAMESPACE}
+    - mailguard.${NAMESPACE}.svc.cluster.local
   issuerRef:
     kind: ClusterIssuer
-    name: cluster-ca-issuer
+    name: ${CLUSTER_ISSUER}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mailguard-config
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 data:
-  TZ: "America/Sao_Paulo"
-  MYHOSTNAME: "mailguard.local"
-  SMTP_RELAY_HOST: "[smtp.office365.com]:25"
-  GRAYLOG_HOST: "graylog.local"
-  GRAYLOG_PORT: "514"
-  WAZUH_HOST: "wazuh.local"
-  WAZUH_PORT: "1514"
-  DASHBOARD_PORT: "443"
-  DASHBOARD_USER: "admin"
-  DASHBOARD_PASSWORD: "Admin@2026"
+  TZ: "${TZ}"
+  MYHOSTNAME: "${MYHOSTNAME}"
+  SMTP_RELAY_HOST: "${SMTP_RELAY_HOST}"
+  GRAYLOG_HOST: "${GRAYLOG_HOST}"
+  GRAYLOG_PORT: "${GRAYLOG_PORT}"
+  WAZUH_HOST: "${WAZUH_HOST}"
+  WAZUH_PORT: "${WAZUH_PORT}"
+  DASHBOARD_PORT: "${DASHBOARD_PORT}"
+  DASHBOARD_USER: "${DASHBOARD_USER}"
+  DASHBOARD_PASSWORD: "${DASHBOARD_PASSWORD}"
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mailguard-allowed-ips
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 data:
   allowed_ips.cidr: |
     # ==============================================================================
@@ -90,7 +90,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mailguard
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 spec:
   replicas: 1
   selector:
@@ -104,8 +104,8 @@ spec:
       serviceAccountName: mailguard-sa
       containers:
         - name: mailguard
-          image: mailguard:3.4
-          imagePullPolicy: IfNotPresent
+          image: ${IMAGE_TAG}
+          imagePullPolicy: Always
           resources:
             limits:
               cpu: 350m
@@ -162,7 +162,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: mailguard
-  namespace: infraestrutura
+  namespace: ${NAMESPACE}
 spec:
   type: LoadBalancer
   externalTrafficPolicy: Local

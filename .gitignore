@@ -5,6 +5,9 @@
 .env.production
 !.env.example
 
+# Manifestos Renderizados com Credenciais Locais
+mailguard.yaml
+
 # Planos e Anotações Internas de Implementação
 PLANO_IMPLEMENTACAO.md
 PLANO_*.md
