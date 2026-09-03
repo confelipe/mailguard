@@ -24,6 +24,12 @@ postconf -e "smtpd_client_connection_rate_limit = 120"
 postconf -e "smtpd_client_message_rate_limit = 300"
 postconf -e "message_size_limit = 36700160"
 
+# Habilitar Serviço Submission (Porta 587) no master.cf
+postconf -M submission/inet="submission inet n - n - - smtpd"
+postconf -P "submission/inet/syslog_name=postfix/submission"
+postconf -P "submission/inet/smtpd_tls_security_level=may"
+postconf -P "submission/inet/smtpd_sasl_auth_enable=no"
+
 # Configuração de Redes Confiáveis (Tabela CIDR ou Variável)
 CIDR_RULES="/etc/mailguard/rules/allowed_ips.cidr"
 if [ -f "${CIDR_RULES}" ]; then
@@ -41,7 +47,7 @@ else
     postconf -e "relayhost = [smtp.office365.com]:25"
 fi
 
-# Sem autenticação SASL
+# Sem autenticação SASL no cliente SMTP
 postconf -e "smtp_sasl_auth_enable = no"
 
 # TLS de Saída
@@ -50,7 +56,7 @@ postconf -e "smtp_tls_security_level = encrypt"
 postconf -e "smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt"
 postconf -e "smtp_tls_session_cache_database = lmdb:/var/lib/postfix/smtp_scache"
 
-# TLS de Entrada
+# TLS de Entrada (Servidor)
 SSL_DIR="/etc/ssl/mailguard"
 if [ -f "${SSL_DIR}/tls.crt" ] && [ -f "${SSL_DIR}/tls.key" ]; then
     echo "Configurando certificado TLS de servidor (${SSL_DIR}/tls.crt)..."
