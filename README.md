@@ -7,6 +7,7 @@
 > **Hostname Padrão:** `mailguard.local`  
 > **Painel HTTPS Seguro:** `https://mailguard.local` (Porta `443` com Certificado TLS)  
 > **Exposição de Rede:** `type: LoadBalancer` com IP Dedicado  
+> **Guia para Desenvolvedores / Sistemas:** 📘 [INTEGRACAO.md](INTEGRACAO.md)  
 
 ---
 
@@ -46,6 +47,7 @@ flowchart TD
 
         subgraph Forwarder ["Python Log Forwarder"]
             logtail["Leitor em Tempo Real (/var/log/mail.log)"]
+            tracker["Correlacionador de Transações por Queue ID"]
             filter["Filtro Anti-Ruído (Probes & Health Checks)"]
             udp_sender["Transmissor UDP Syslog (RFC 3164)"]
         end
@@ -75,7 +77,7 @@ flowchart TD
     postfix -->|Logs de Envio| logtail
     dashboard -->|Auditoria Administrativa| logtail
 
-    logtail --> filter --> udp_sender
+    logtail --> tracker --> filter --> udp_sender
     udp_sender -->|Syslog :514| graylog
     udp_sender -->|Syslog :1514| wazuh
 ```
@@ -102,7 +104,12 @@ flowchart TD
 
 ---
 
-### 🛡️ B. Segurança, Hardening & Auditoria SIEM
+### 🛡️ B. Rastreabilidade Ponta a Ponta & Auditoria SIEM
+- **Linha de Auditoria Consolidada (`[MAIL_TRANSACTION]`)**:
+  - O Log Forwarder correlaciona em tempo real os eventos do Postfix pelo `Queue ID` e transmite ao Graylog e Wazuh uma linha única contendo:
+  ```log
+  [MAIL_TRANSACTION] queue_id=4Z8N1x client_ip=192.168.1.50 client_name=glpi.local from=<glpi@dominio.com> to=<suporte@dominio.com> size=1542 status=sent relay=outlook.com:25 response="250 2.6.0 Queued mail for delivery"
+  ```
 - **Hardening Avançado de Postfix**:
   - Banner limpo (`smtpd_banner = $myhostname ESMTP MailGuard`) ocultando SO e versão.
   - Bloqueio de enumeração de caixas postais (`disable_vrfy_command = yes`).
@@ -129,12 +136,14 @@ flowchart TD
 .
 ├── Dockerfile                  # Imagem Alpine 3.19 (Postfix, Python3, Certs, Mailx)
 ├── entrypoint.sh               # Script de boot, hardening, watchdog e inicialização
-├── log_forwarder.py            # Log Forwarder UDP Syslog (Graylog/Wazuh com filtro anti-ruído)
+├── log_forwarder.py            # Log Forwarder UDP Syslog com rastreabilidade [MAIL_TRANSACTION]
 ├── dashboard.py                # Servidor Web HTTPS (:443), Auth por Cookie e API REST
 ├── mailguard.yaml              # Manifestos K8s (Certificate, ConfigMaps, Deployment, Service)
+├── deploy.sh                   # Script de build, push e deploy com variáveis do .env
 ├── manage_ips.sh               # CLI interativa para gestão de IPs autorizados
 ├── test_mail.sh                # Script utilitário para disparo de e-mails de teste
-├── PLANO_IMPLEMENTACAO.md      # Registro histórico e planos técnicos executados
+├── INTEGRACAO.md               # Manual prático de integração para sistemas externos
+├── .env.example                # Template público de variáveis de ambiente
 └── README.md                   # Documentação mestre padronizada
 ```
 
@@ -142,7 +151,12 @@ flowchart TD
 
 ## 🛠️ 4. Guia de Operação & Comandos Úteis
 
-### 4.1. Como Gerenciar IPs Autorizados via CLI
+### 4.1. Como Integrar Sistemas Externos (GLPI, Zabbix, Grafana, etc.)
+Consulte o guia completo com exemplos em: 📘 **[INTEGRACAO.md](INTEGRACAO.md)**.
+
+---
+
+### 4.2. Como Gerenciar IPs Autorizados via CLI
 Execute no terminal:
 
 ```bash
@@ -157,53 +171,24 @@ Execute no terminal:
 
 # 4. Remover uma regra existente
 ./manage_ips.sh remove 192.168.1.50/32
-
-# 5. Abrir a lista completa no editor interativo
-./manage_ips.sh edit
 ```
 
 ---
 
-### 4.2. Como Construir e Publicar Nova Imagem
+### 4.3. Como Fazer o Deploy Automatizado via `.env`
 
 ```bash
-# 1. Build da imagem
-docker build -t seu-registry/mailguard:3.4 .
+# 1. Configurar variáveis de ambiente caso ainda não existam
+cp .env.example .env
+# (Edite o .env com seus dados locais)
 
-# 2. Push para o Registry
-docker push seu-registry/mailguard:3.4
+# 2. Executar deploy completo com 1 comando
+./deploy.sh
 ```
 
 ---
 
-### 4.3. Como Fazer o Deploy no Kubernetes
-
-```bash
-# 1. Aplicar os manifestos no namespace infraestrutura
-kubectl apply -f mailguard.yaml
-
-# 2. Verificar o status do Pod
-kubectl -n infraestrutura get pods -l app=mailguard -o wide
-
-# 3. Verificar o IP dedicado do LoadBalancer
-kubectl -n infraestrutura get svc mailguard
-
-# 4. Acompanhar os logs em tempo real
-kubectl -n infraestrutura logs -f deployment/mailguard
-```
-
----
-
-### 4.4. Como Testar o Envio de E-mail via Terminal
-
-```bash
-# Disparo direto para e-mail de teste
-./test_mail.sh usuario@example.com
-```
-
----
-
-## 📊 5. Parâmetros de Configuração (`mailguard-config`)
+## 📊 5. Parâmetros de Configuração (`.env`)
 
 | Parâmetro | Valor Padrão | Descrição |
 |---|---|---|
@@ -217,32 +202,3 @@ kubectl -n infraestrutura logs -f deployment/mailguard
 | `DASHBOARD_PORT` | `443` | Porta HTTPS do painel de controle. |
 | `DASHBOARD_USER` | `admin` | Usuário do painel de controle. |
 | `DASHBOARD_PASSWORD`| `Admin@2026` | Senha de acesso ao painel. |
-
----
-
-## 📋 6. Pré-requisitos & Disaster Recovery (Recriação do Zero em Outro Cluster)
-
-Para recriar este projeto do zero em um novo cluster Kubernetes ou ambiente de contingência:
-
-### 1. Pré-requisitos de Infraestrutura Kubernetes:
-- **Namespace**: `infraestrutura` (`kubectl create namespace infraestrutura`).
-- **Cert-Manager**: Operacional com um `ClusterIssuer` (ex: `cluster-ca-issuer` ou Let's Encrypt). *Ajuste o campo `issuerRef.name` no `mailguard.yaml` conforme seu cluster*.
-- **MetalLB ou Cloud LoadBalancer**: Para fornecer o IP externo dedicado na criação do `Service type: LoadBalancer`.
-
-### 2. Pré-requisitos de Rede & Firewall (Regras de Saída):
-- **Porta 25 TCP (Saída)**: Liberada da rede do cluster para a Internet para entrega direta ao provedor SMTP / Office 365.
-- **Porta 514 UDP (Saída)**: Liberada da rede do cluster para o servidor Graylog.
-- **Porta 1514 UDP (Saída)**: Liberada da rede do cluster para o servidor Wazuh.
-
-### 3. Procedimento de Recriação Rápida (Disaster Recovery):
-```bash
-# Passo 1: Criar namespace caso necessário
-kubectl create namespace infraestrutura
-
-# Passo 2: Construir e publicar imagem
-docker build -t seu-registry/mailguard:3.4 .
-docker push seu-registry/mailguard:3.4
-
-# Passo 3: Aplicar manifestos
-kubectl apply -f mailguard.yaml
-```
