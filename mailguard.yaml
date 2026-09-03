@@ -1,0 +1,151 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: tls-mailguard
+  namespace: infraestrutura
+spec:
+  secretName: tls-mailguard
+  commonName: mailguard.local
+  subject:
+    organizations:
+      - Infrastructure
+    organizationalUnits:
+      - K8S
+    countries:
+      - BR
+  dnsNames:
+    - mailguard.local
+    - mailguard
+    - mailguard.infraestrutura
+    - mailguard.infraestrutura.svc.cluster.local
+  issuerRef:
+    kind: ClusterIssuer
+    name: cluster-ca-issuer
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mailguard-config
+  namespace: infraestrutura
+data:
+  TZ: "America/Sao_Paulo"
+  MYHOSTNAME: "mailguard.local"
+  SMTP_RELAY_HOST: "[smtp.office365.com]:25"
+  GRAYLOG_HOST: "graylog.local"
+  GRAYLOG_PORT: "514"
+  WAZUH_HOST: "wazuh.local"
+  WAZUH_PORT: "1514"
+  DASHBOARD_PORT: "443"
+  DASHBOARD_USER: "admin"
+  DASHBOARD_PASSWORD: "Admin@2026"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mailguard-allowed-ips
+  namespace: infraestrutura
+data:
+  allowed_ips.cidr: |
+    # ==============================================================================
+    # Tabela de IPs / Redes Autorizadas para Relay no MailGuard
+    # Formato: <IP_OU_CIDR>    OK # <Descricao_Opcional>
+    # ==============================================================================
+
+    # Loopback & Redes Internas do Cluster
+    127.0.0.0/8            OK # Localhost
+    10.0.0.0/8             OK # Rede Interna do Cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailguard
+  namespace: infraestrutura
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailguard
+  template:
+    metadata:
+      labels:
+        app: mailguard
+    spec:
+      containers:
+        - name: mailguard
+          image: mailguard:3.4
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: 350m
+              memory: 384Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          ports:
+            - name: smtp
+              containerPort: 25
+            - name: submission
+              containerPort: 587
+            - name: https
+              containerPort: 443
+          envFrom:
+            - configMapRef:
+                name: mailguard-config
+          volumeMounts:
+            - name: tls-cert
+              mountPath: /etc/ssl/mailguard
+              readOnly: true
+            - name: allowed-ips
+              mountPath: /etc/mailguard/rules
+              readOnly: true
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: tls-cert
+          secret:
+            secretName: tls-mailguard
+            defaultMode: 0400
+            optional: true
+        - name: allowed-ips
+          configMap:
+            name: mailguard-allowed-ips
+            defaultMode: 0400
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailguard
+  namespace: infraestrutura
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: mailguard
+  ports:
+    - name: smtp
+      protocol: TCP
+      port: 25
+      targetPort: 25
+    - name: submission
+      protocol: TCP
+      port: 587
+      targetPort: 587
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 443

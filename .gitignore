@@ -1,0 +1,24 @@
+# Variáveis de Ambiente e Segredos (NUNCA commitar)
+.env
+.env.*
+.env.local
+.env.production
+!.env.example
+
+# Planos e Anotações Internas de Implementação
+PLANO_IMPLEMENTACAO.md
+PLANO_*.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Editores e SO
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
