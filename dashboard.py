@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MailGuard Control Center & Web Dashboard
-Servidor HTTPS com TLS nativo, autenticação segura e auditoria SIEM.
+Servidor HTTPS com TLS nativo, autenticação segura, auditoria SIEM e sincronização RBAC com K8s.
 """
 
 import os
@@ -12,6 +12,7 @@ import socket
 import hashlib
 import datetime
 import subprocess
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -54,6 +55,62 @@ def run_cmd(cmd):
         return res.returncode, res.stdout, res.stderr
     except Exception as e:
         return 1, "", str(e)
+
+def sync_to_k8s_configmap(cidr_content):
+    """
+    Sincroniza o conteúdo de allowed_ips.cidr com o ConfigMap mailguard-allowed-ips no Kubernetes via API in-cluster.
+    """
+    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    ns_path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+    if not os.path.exists(token_path):
+        return False, "Fora do Kubernetes (token não encontrado)"
+
+    try:
+        with open(token_path, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+
+        namespace = os.environ.get("NAMESPACE", "infraestrutura")
+        if os.path.exists(ns_path):
+            with open(ns_path, "r", encoding="utf-8") as f:
+                namespace = f.read().strip()
+
+        api_url = f"https://kubernetes.default.svc/api/v1/namespaces/{namespace}/configmaps/mailguard-allowed-ips"
+
+        ctx = ssl.create_default_context(cafile=ca_path if os.path.exists(ca_path) else None)
+        if not os.path.exists(ca_path):
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+        payload = json.dumps({
+            "data": {
+                "allowed_ips.cidr": cidr_content
+            }
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            api_url,
+            data=payload,
+            method="PATCH",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/strategic-merge-patch+json",
+                "Accept": "application/json"
+            }
+        )
+
+        with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+            if resp.status in (200, 201):
+                print(f"[Dashboard K8s Sync] ConfigMap 'mailguard-allowed-ips' atualizado com sucesso no K8s ({resp.status})", flush=True)
+                return True, "ConfigMap persistido no Kubernetes"
+            else:
+                print(f"[Dashboard K8s Sync Warning] Retorno da API K8s: {resp.status}", flush=True)
+                return False, f"HTTP {resp.status}"
+
+    except Exception as e:
+        print(f"[Dashboard K8s Sync Error] Falha ao atualizar ConfigMap no K8s: {e}", flush=True)
+        return False, str(e)
 
 def get_queue():
     code, out, _ = run_cmd("postqueue -p")
@@ -858,6 +915,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                         f.write(f"\n{entry}\n")
                     run_cmd("postfix reload")
                     audit_log("AUDIT", f"IP {ip} adicionado à lista de permissões (Desc: {desc})", user=user, client_ip=client_ip)
+                    
+                    # Sincroniza com o ConfigMap do Kubernetes
+                    with open(CIDR_FILE, "r", encoding="utf-8") as f:
+                        full_content = f.read()
+                    sync_to_k8s_configmap(full_content)
+                    
                     self.send_json({"success": True})
                 except Exception as e:
                     self.send_json({"error": f"Erro de gravação: {str(e)}"}, 500)
@@ -870,10 +933,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                     with open(CIDR_FILE, "r", encoding="utf-8") as f:
                         lines = f.readlines()
                     new_lines = [l for l in lines if not l.strip().startswith(ip)]
+                    full_content = "".join(new_lines)
                     with open(CIDR_FILE, "w", encoding="utf-8") as f:
-                        f.writelines(new_lines)
+                        f.write(full_content)
                     run_cmd("postfix reload")
                     audit_log("AUDIT", f"IP {ip} removido da lista de permissões", user=user, client_ip=client_ip)
+                    
+                    # Sincroniza com o ConfigMap do Kubernetes
+                    sync_to_k8s_configmap(full_content)
+                    
                     self.send_json({"success": True})
                 except Exception as e:
                     self.send_json({"error": f"Erro ao remover IP: {str(e)}"}, 500)

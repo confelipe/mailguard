@@ -63,6 +63,37 @@ kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply
 
 # Renderizar manifesto temporário com as variáveis do .env
 cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mailguard-sa
+  namespace: ${NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mailguard-configmap-role
+  namespace: ${NAMESPACE}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["mailguard-allowed-ips"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mailguard-configmap-rb
+  namespace: ${NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: mailguard-sa
+    namespace: ${NAMESPACE}
+roleRef:
+  kind: Role
+  name: mailguard-configmap-role
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -135,6 +166,7 @@ spec:
       labels:
         app: mailguard
     spec:
+      serviceAccountName: mailguard-sa
       containers:
         - name: mailguard
           image: ${IMAGE_TAG}
@@ -161,7 +193,7 @@ spec:
               mountPath: /etc/ssl/mailguard
               readOnly: true
             - name: allowed-ips
-              mountPath: /etc/mailguard/rules
+              mountPath: /etc/mailguard/configmap
               readOnly: true
           livenessProbe:
             exec:
